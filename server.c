@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <errno.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
@@ -7,6 +8,8 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+#include "http_handler.h"
 
 int server_socket = -1;
 
@@ -18,7 +21,7 @@ void handle_sigint(int sig) {
         close(server_socket);
     }
     exit(EXIT_SUCCESS);
-}
+};
 
 void parse_host(const char* request, char* host, int* port) {
     *port = 80;
@@ -43,7 +46,7 @@ void parse_host(const char* request, char* host, int* port) {
         host_line++;
         *port = atoi(host_line);
     }
-}
+};
 
 void parse_and_rewrite_request(char* buffer, char* host, int* port) {
     parse_host(buffer, host, port);
@@ -70,7 +73,7 @@ void parse_and_rewrite_request(char* buffer, char* host, int* port) {
 
         snprintf(buffer, BUFFER_SIZE, "%s%s", new_request_line, rest);
     }
-}
+};
 
 ssize_t forward_all(int from_fd, int to_fd) {
     char buffer[4096];
@@ -101,7 +104,7 @@ ssize_t forward_all(int from_fd, int to_fd) {
     }
 
     return total;
-}
+};
 
 int setup_upstream_socket(char* address, int port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -117,6 +120,8 @@ int setup_upstream_socket(char* address, int port) {
         close(sock);
         exit(EXIT_FAILURE);
     }
+
+    printf("address %s and port %d\n", address, port);
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -135,7 +140,7 @@ int setup_upstream_socket(char* address, int port) {
     }
 
     return sock;
-}
+};
 
 int setup_server_socket(int port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -171,7 +176,7 @@ int setup_server_socket(int port) {
     }
 
     return sock;
-}
+};
 
 int main(int argc, char* argv[]) {
     int server_port;
@@ -199,20 +204,37 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        char buffer[4096];
-        int bytes_received = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+        char request_buffer[BUFFER_SIZE];
+        int bytes_received = recv(client_fd, request_buffer, sizeof(request_buffer) - 1, 0);
 
-        buffer[bytes_received] = '\0';
+        request_buffer[bytes_received] = '\0';
 
         char host[256];
         int upstream_client_port = 80;
 
-        parse_and_rewrite_request(buffer, host, &upstream_client_port);
+        HttpRequest req;
+
+        if (parse_http_request(request_buffer, &req) != 0) {
+            printf("Failed to parse HTTP request\n");
+            return 1;
+        }
+
+        // printf("Method: %s\nURL: %s\nVersion: %s\nHost: %s\n",
+        //        req.method, req.url, req.version, req.host);
+
+        char ip[32];
+        if (resolve_host(req.host, ip, sizeof(ip)) == 0) {
+            printf("Resolved IP: %s\n", ip);
+        } else {
+            printf("Failed to resolve host\n");
+        }
+
+        free(req.host);
 
         int up_stream_socket = -1;
-        up_stream_socket = setup_upstream_socket(host, upstream_client_port);
+        up_stream_socket = setup_upstream_socket(ip, upstream_client_port);
 
-        ssize_t sent = write(up_stream_socket, buffer, strlen(buffer));
+        ssize_t sent = write(up_stream_socket, request_buffer, strlen(request_buffer));
         if (sent < 0) {
             perror("write failed");
             exit(EXIT_FAILURE);
@@ -226,4 +248,4 @@ int main(int argc, char* argv[]) {
 
     close(server_socket);
     return 0;
-}
+};
