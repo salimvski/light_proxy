@@ -15,13 +15,14 @@ int server_socket = -1;
 
 #define BUFFER_SIZE 4096
 
-void handle_sigint(int sig) {
-    printf("\nCaught SIGINT %d, shutting down server...\n", sig);
+
+void handle_signal(int sig) {
+    printf("\nShutting down server...\n");
     if (server_socket >= 0) {
         close(server_socket);
     }
-    exit(EXIT_SUCCESS);
-};
+    server_socket = -1;
+}
 
 void parse_host(const char* request, char* host, int* port) {
     *port = 80;
@@ -116,12 +117,10 @@ int setup_upstream_socket(char* address, int port) {
     int opt = 1;
 
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        perror("setsockopt failed");
+        perror("Setsockopt failed");
         close(sock);
         exit(EXIT_FAILURE);
     }
-
-    printf("address %s and port %d\n", address, port);
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -132,9 +131,9 @@ int setup_upstream_socket(char* address, int port) {
     int is_connected = connect(sock, (struct sockaddr*)&addr, sizeof(addr));
 
     if (is_connected == 0) {
-        printf("successfull connect to server at port %d\n", port);
+        printf("Successfull connect to server at port %d\n", port);
     } else {
-        perror("connect failed with upstream\n");
+        perror("Connect failed with upstream\n");
         close(sock);
         exit(EXIT_FAILURE);
     }
@@ -152,7 +151,7 @@ int setup_server_socket(int port) {
     int opt = 1;
 
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-        perror("setsockopt failed");
+        perror("Setsockopt failed");
         close(sock);
         exit(EXIT_FAILURE);
     }
@@ -179,18 +178,19 @@ int setup_server_socket(int port) {
 };
 
 int main(int argc, char* argv[]) {
+
+    signal(SIGINT, handle_signal);
+
     int server_port;
 
     if (argc < 2) {
-        printf("Usage: %s <server_port>", argv[0]);
+        printf("Usage: %s <server_port>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
     server_port = atoi(argv[1]);
 
-    signal(SIGINT, handle_sigint);
-
-    int server_socket = setup_server_socket(server_port);
+    server_socket = setup_server_socket(server_port);
 
     printf("Server listening on port %d...\n", server_port);
 
@@ -200,8 +200,13 @@ int main(int argc, char* argv[]) {
         int client_fd =
             accept(server_socket, (struct sockaddr*)&client_addr, &addr_len);
         if (client_fd < 0) {
-            perror("accept");
-            continue;
+            if (server_socket == -1) {
+                printf("Server shutdown complete.\n");
+                break;
+            } else {
+                perror("accept error, continuing...");
+                continue;
+            }
         }
 
         char request_buffer[BUFFER_SIZE];
