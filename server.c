@@ -8,20 +8,19 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include "http_handler.h"
 
-int server_socket = -1;
+int server_socket = 0;
+
+volatile sig_atomic_t shutdown_requested = 0;
 
 #define BUFFER_SIZE 4096
 
-
 void handle_signal(int sig) {
     printf("\nShutting down server...\n");
-    if (server_socket >= 0) {
-        close(server_socket);
-    }
-    server_socket = -1;
+    shutdown_requested = 1;
 }
 
 void parse_host(const char* request, char* host, int* port) {
@@ -111,7 +110,7 @@ int setup_upstream_socket(char* address, int port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
         perror("Socket upstream failed to create");
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     int opt = 1;
@@ -119,7 +118,7 @@ int setup_upstream_socket(char* address, int port) {
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         perror("Setsockopt failed");
         close(sock);
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     struct sockaddr_in addr;
@@ -129,13 +128,10 @@ int setup_upstream_socket(char* address, int port) {
     addr.sin_addr.s_addr = inet_addr(address);
 
     int is_connected = connect(sock, (struct sockaddr*)&addr, sizeof(addr));
-
-    if (is_connected == 0) {
-        printf("Successfull connect to server at port %d\n", port);
-    } else {
-        perror("Connect failed with upstream\n");
+    if (is_connected != 0) {
+        perror("Connect failed with upstream");
         close(sock);
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     return sock;
@@ -145,7 +141,7 @@ int setup_server_socket(int port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
         perror("Socket failed");
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     int opt = 1;
@@ -153,7 +149,7 @@ int setup_server_socket(int port) {
     if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         perror("Setsockopt failed");
         close(sock);
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     struct sockaddr_in addr;
@@ -165,20 +161,19 @@ int setup_server_socket(int port) {
     if (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         perror("Bind failed");
         close(sock);
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     if (listen(sock, 10) < 0) {
         perror("Listen failed");
         close(sock);
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     return sock;
 };
 
 int main(int argc, char* argv[]) {
-
     signal(SIGINT, handle_signal);
 
     int server_port;
@@ -190,67 +185,95 @@ int main(int argc, char* argv[]) {
 
     server_port = atoi(argv[1]);
 
+    // install signal handler (no SA_RESTART, so accept can be interrupted)
+    struct sigaction sa;
+    sa.sa_handler = handle_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+
     server_socket = setup_server_socket(server_port);
+    if (server_socket < 0) {
+        perror("Fatal: Cannot create server socket");
+        exit(EXIT_FAILURE);
+    }
+
+    int client_fd = -1;
+    int up_stream_socket = -1;
 
     printf("Server listening on port %d...\n", server_port);
 
-    while (1) {
+    while (!shutdown_requested) {
+        up_stream_socket = -1;
+        client_fd = -1;
         struct sockaddr_in client_addr;
         socklen_t addr_len = sizeof(client_addr);
-        int client_fd =
-            accept(server_socket, (struct sockaddr*)&client_addr, &addr_len);
-        if (client_fd < 0) {
-            if (server_socket == -1) {
-                printf("Server shutdown complete.\n");
-                break;
-            } else {
-                perror("accept error, continuing...");
+        retry_accept:
+            client_fd = accept(server_socket, (struct sockaddr*)&client_addr, &addr_len);
+            if (client_fd < 0) {
+                if (shutdown_requested) break;
+                if (errno == EINTR) goto retry_accept;  // interrupted by signal
+                perror("accept error");
                 continue;
             }
-        }
 
         char request_buffer[BUFFER_SIZE];
-        int bytes_received = recv(client_fd, request_buffer, sizeof(request_buffer) - 1, 0);
-
+        size_t max_recv = sizeof(request_buffer) - 1;
+        
+        int bytes_received = recv(client_fd, request_buffer, max_recv, 0);
+        if (bytes_received == 0) {
+            printf("Client closed connection\n");
+            goto client_cleanup;
+        }
+        if (bytes_received < 0) {
+            perror("recv failed");
+            goto client_cleanup;
+        }
         request_buffer[bytes_received] = '\0';
+
 
         char host[256];
         int upstream_client_port = 80;
 
         HttpRequest req;
+        req.host = NULL;
 
         if (parse_http_request(request_buffer, &req) != 0) {
-            printf("Failed to parse HTTP request\n");
-            return 1;
+            fprintf(stderr, "Error: Failed to parse HTTP request\n");
+            goto client_cleanup;
         }
-
-        // printf("Method: %s\nURL: %s\nVersion: %s\nHost: %s\n",
-        //        req.method, req.url, req.version, req.host);
 
         char ip[32];
-        if (resolve_host(req.host, ip, sizeof(ip)) == 0) {
-            printf("Resolved IP: %s\n", ip);
-        } else {
-            printf("Failed to resolve host\n");
+        if (resolve_host(req.host, ip, sizeof(ip)) != 0) {
+            fprintf(stderr, "Error: Failed to resolve host %s\n", req.host);
+            goto client_cleanup;
         }
+        printf("Resolved IP: %s\n", ip);
 
-        free(req.host);
-
-        int up_stream_socket = -1;
         up_stream_socket = setup_upstream_socket(ip, upstream_client_port);
+        if (up_stream_socket < 0) {
+            perror("setup_upstream_socket failed");
+            goto client_cleanup;
+        }
 
         ssize_t sent = write(up_stream_socket, request_buffer, strlen(request_buffer));
         if (sent < 0) {
             perror("write failed");
-            exit(EXIT_FAILURE);
+            goto client_cleanup;
         }
 
         forward_all(up_stream_socket, client_fd);
 
-        close(client_fd);
-        close(up_stream_socket);
+    client_cleanup:
+        if (up_stream_socket >= 0)
+            close(up_stream_socket);
+        if (client_fd >= 0)
+            close(client_fd);
+        if (req.host) free(req.host);
     }
 
-    close(server_socket);
-    return 0;
+    if (server_socket >= 0) close(server_socket);
+    return 0; 
+
+
 };
