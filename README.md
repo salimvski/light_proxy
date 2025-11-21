@@ -1,0 +1,2 @@
+- Handle non replying hosts that does not serve HTTP
+- Handle timeout

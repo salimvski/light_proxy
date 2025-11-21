@@ -79,13 +79,18 @@ void parse_and_rewrite_request(char* buffer, char* host, int* port) {
 };
 
 ssize_t forward_all(int from_fd, int to_fd) {
+
     char buffer[4096];
     ssize_t total = 0;
 
     while (1) {
         ssize_t n = recv(from_fd, buffer, sizeof(buffer), 0);
         if (n < 0) {
-            perror("recv failed");
+            if (errno == ECONNRESET) {
+                printf("Upstream connection reset (client disconnected)\n");
+            } else {
+                perror("recv failed forward");
+            }
             return -1;
         }
         if (n == 0) {
@@ -93,17 +98,12 @@ ssize_t forward_all(int from_fd, int to_fd) {
             break;
         }
 
-        ssize_t sent = 0;
-        while (sent < n) {
-            ssize_t s = write(to_fd, buffer + sent, n - sent);
-            if (s <= 0) {
-                perror("write failed");
-                return -1;
-            }
-            sent += s;
+        ssize_t sent = write_all(to_fd, buffer, n);
+        if (sent <= 0) {
+            perror("write failed");
+            return -1;
         }
 
-        total += n;
     }
 
     return total;
@@ -218,7 +218,7 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        char request_buffer[BUFFER_SIZE];
+        char request_buffer[BUFFER_SIZE] = {0};
         size_t max_recv = sizeof(request_buffer) - 1;
         
         int bytes_received = recv(client_fd, request_buffer, max_recv, 0);
@@ -227,17 +227,14 @@ int main(int argc, char* argv[]) {
             goto client_cleanup;
         }
         if (bytes_received < 0) {
-            perror("recv failed");
+            perror("recv failed client");
             goto client_cleanup;
         }
-        request_buffer[bytes_received] = '\0';
-
 
         char host[256];
         int upstream_client_port = 80;
 
-        HttpRequest req;
-        req.host = NULL;
+        HttpRequest req = {0};
 
         if (parse_http_request(request_buffer, &req) != 0) {
             fprintf(stderr, "Error: Failed to parse HTTP request\n");
