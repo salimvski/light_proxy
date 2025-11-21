@@ -9,7 +9,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <fcntl.h>
-
+#include "utils.h"
 #include "http_handler.h"
 
 int server_socket = 0;
@@ -19,7 +19,10 @@ volatile sig_atomic_t shutdown_requested = 0;
 #define BUFFER_SIZE 4096
 
 void handle_signal(int sig) {
-    printf("\nShutting down server...\n");
+    const char msg[] = "Shutting down...\n";
+    
+    write(STDERR_FILENO, msg, sizeof(msg) - 1);
+    
     shutdown_requested = 1;
 }
 
@@ -121,8 +124,7 @@ int setup_upstream_socket(char* address, int port) {
         return -1;
     }
 
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
+    struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = inet_addr(address);
@@ -152,8 +154,8 @@ int setup_server_socket(int port) {
         return -1;
     }
 
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
+    struct sockaddr_in addr = {0};
+
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -186,7 +188,7 @@ int main(int argc, char* argv[]) {
     server_port = atoi(argv[1]);
 
     // install signal handler (no SA_RESTART, so accept can be interrupted)
-    struct sigaction sa;
+    struct sigaction sa = {0};
     sa.sa_handler = handle_signal;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
@@ -206,16 +208,15 @@ int main(int argc, char* argv[]) {
     while (!shutdown_requested) {
         up_stream_socket = -1;
         client_fd = -1;
-        struct sockaddr_in client_addr;
+        struct sockaddr_in client_addr = {0};
         socklen_t addr_len = sizeof(client_addr);
-        retry_accept:
-            client_fd = accept(server_socket, (struct sockaddr*)&client_addr, &addr_len);
-            if (client_fd < 0) {
-                if (shutdown_requested) break;
-                if (errno == EINTR) goto retry_accept;  // interrupted by signal
-                perror("accept error");
-                continue;
-            }
+        client_fd = accept(server_socket, (struct sockaddr*)&client_addr, &addr_len);
+        if (client_fd < 0) {
+            if (shutdown_requested) break;
+            if (errno == EINTR) continue;  // interrupted by signal
+            perror("accept error");
+            continue;
+        }
 
         char request_buffer[BUFFER_SIZE];
         size_t max_recv = sizeof(request_buffer) - 1;
@@ -256,8 +257,9 @@ int main(int argc, char* argv[]) {
             goto client_cleanup;
         }
 
-        ssize_t sent = write(up_stream_socket, request_buffer, strlen(request_buffer));
-        if (sent < 0) {
+        ssize_t result = 
+        write_all(up_stream_socket, request_buffer, sizeof(request_buffer) - 1);
+        if (result < 0) {
             perror("write failed");
             goto client_cleanup;
         }

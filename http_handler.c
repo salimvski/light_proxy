@@ -40,7 +40,7 @@ int parse_http_request(const char *request, HttpRequest *req) {
 int resolve_host(const char *host, char *ip_str, size_t ip_len) {
     if (!host || !ip_str) return -1;
 
-    struct in_addr addr;
+    struct in_addr addr = {0};
     // Try if host is already an IP
     if (inet_pton(AF_INET, host, &addr) == 1) {
         strncpy(ip_str, host, ip_len);
