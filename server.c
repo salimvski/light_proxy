@@ -10,77 +10,24 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "utils.h"
+#include "network.h"
 #include "http_handler.h"
 
-int server_socket = 0;
+int g_server_socket = 0;
 
-volatile sig_atomic_t shutdown_requested = 0;
-
-#define BUFFER_SIZE 4096
+volatile sig_atomic_t g_shutdown_requested = 0;
 
 void handle_signal(int sig) {
     const char msg[] = "Shutting down...\n";
     
     write(STDERR_FILENO, msg, sizeof(msg) - 1);
     
-    shutdown_requested = 1;
+    g_shutdown_requested = 1;
 }
-
-void parse_host(const char* request, char* host, int* port) {
-    *port = 80;
-
-    const char* host_line = strstr(request, "Host:");
-    if (!host_line)
-        return;
-
-    host_line += 5;
-
-    while (*host_line == ' ')
-        host_line++;
-
-    int i = 0;
-    while (*host_line && *host_line != ':' && *host_line != '\r' &&
-           *host_line != '\n' && i < 255) {
-        host[i++] = *host_line++;
-    }
-    host[i] = '\0';
-
-    if (*host_line == ':') {
-        host_line++;
-        *port = atoi(host_line);
-    }
-};
-
-void parse_and_rewrite_request(char* buffer, char* host, int* port) {
-    parse_host(buffer, host, port);
-
-    char method[16], url[1024], version[16];
-    sscanf(buffer, "%15s %1023s %15s", method, url, version);
-
-    char* p = strstr(url, "://");
-    if (p)
-        p += 3;
-
-    p = strchr(p, '/');
-    if (!p)
-        p = "/";
-
-    char new_request_line[1024];
-    snprintf(new_request_line, sizeof(new_request_line), "%s %s %s\r\n", method,
-             p, version);
-
-    char* first_line_end = strstr(buffer, "\r\n");
-    if (first_line_end) {
-        char rest[BUFFER_SIZE];
-        strcpy(rest, first_line_end + 2);
-
-        snprintf(buffer, BUFFER_SIZE, "%s%s", new_request_line, rest);
-    }
-};
 
 ssize_t forward_all(int from_fd, int to_fd) {
 
-    char buffer[4096];
+    char buffer[NET_BUFFER_SIZE];
     ssize_t total = 0;
 
     while (1) {
@@ -194,8 +141,8 @@ int main(int argc, char* argv[]) {
     sa.sa_flags = 0;
     sigaction(SIGINT, &sa, NULL);
 
-    server_socket = setup_server_socket(server_port);
-    if (server_socket < 0) {
+    g_server_socket = setup_server_socket(server_port);
+    if (g_server_socket < 0) {
         perror("Fatal: Cannot create server socket");
         exit(EXIT_FAILURE);
     }
@@ -205,20 +152,20 @@ int main(int argc, char* argv[]) {
 
     printf("Server listening on port %d...\n", server_port);
 
-    while (!shutdown_requested) {
+    while (!g_shutdown_requested) {
         up_stream_socket = -1;
         client_fd = -1;
         struct sockaddr_in client_addr = {0};
         socklen_t addr_len = sizeof(client_addr);
-        client_fd = accept(server_socket, (struct sockaddr*)&client_addr, &addr_len);
+        client_fd = accept(g_server_socket, (struct sockaddr*)&client_addr, &addr_len);
         if (client_fd < 0) {
-            if (shutdown_requested) break;
+            if (g_shutdown_requested) break;
             if (errno == EINTR) continue;  // interrupted by signal
             perror("accept error");
             continue;
         }
 
-        char request_buffer[BUFFER_SIZE] = {0};
+        char request_buffer[NET_BUFFER_SIZE] = {0};
         size_t max_recv = sizeof(request_buffer) - 1;
         
         int bytes_received = recv(client_fd, request_buffer, max_recv, 0);
@@ -231,8 +178,8 @@ int main(int argc, char* argv[]) {
             goto client_cleanup;
         }
 
-        char host[256];
-        int upstream_client_port = 80;
+        char host[HTTP_MAX_HOST_LENGTH];
+        int upstream_client_port = NET_DEFAULT_PORT;
 
         HttpRequest req = {0};
 
@@ -241,7 +188,7 @@ int main(int argc, char* argv[]) {
             goto client_cleanup;
         }
 
-        char ip[32];
+        char ip[NET_MAX_IP_LENGTH];
         if (resolve_host(req.host, ip, sizeof(ip)) != 0) {
             fprintf(stderr, "Error: Failed to resolve host %s\n", req.host);
             goto client_cleanup;
@@ -271,7 +218,7 @@ int main(int argc, char* argv[]) {
         if (req.host) free(req.host);
     }
 
-    if (server_socket >= 0) close(server_socket);
+    if (g_server_socket >= 0) close(g_server_socket);
     return 0; 
 
 
