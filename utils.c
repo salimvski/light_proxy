@@ -40,7 +40,8 @@ ssize_t read_all(int fd, void *buffer, size_t count)
                             count - data_received, 0);
 
         if (sent < 0) {
-            if (errno == EINTR) {
+            // Check for recoverable, non-fatal errors
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
                 continue;
             }
             return -1;
@@ -49,10 +50,9 @@ ssize_t read_all(int fd, void *buffer, size_t count)
         if (sent == 0) break;  // Return what we've read so far
 
         data_received += sent;
-        printf("Data received %d", data_received);
     }
 
-    return data_received;
+    return (ssize_t)data_received;
 };
 
 ssize_t forward_all(int from_fd, int to_fd) {

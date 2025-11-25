@@ -28,6 +28,11 @@ int parse_http_request(const char *request, HttpRequest *req) {
             char *h = line + 5;
             while (*h == ' ' || *h == '\t') h++;
             req->host = strdup(h);
+            if (req->host == NULL) {
+                perror("strdup failed: Out of memory");
+                free(req_copy);
+                return -2;
+            }
             break;
         }
     }

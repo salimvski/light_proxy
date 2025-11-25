@@ -16,6 +16,7 @@ int g_server_socket = 0;
 volatile sig_atomic_t g_shutdown_requested = 0;
 
 void handle_signal(int sig) {
+    (void)sig;
     const char msg[] = "Shutting down...\n";
 
     write(STDERR_FILENO, msg, sizeof(msg) - 1);
@@ -74,6 +75,7 @@ int main(int argc, char* argv[]) {
         size_t max_recv = sizeof(request_buffer) - 1;
         int bytes_received = read_http_request(client_fd,
                                                request_buffer, max_recv);
+
         if (bytes_received == 0) {
             printf("Client closed connection\n");
             goto client_cleanup;
@@ -83,7 +85,6 @@ int main(int argc, char* argv[]) {
             goto client_cleanup;
         }
 
-        char host[HTTP_MAX_HOST_LENGTH];
         int upstream_client_port = NET_DEFAULT_PORT;
 
         HttpRequest req = {0};
@@ -107,7 +108,7 @@ int main(int argc, char* argv[]) {
         }
 
         ssize_t result =
-            write_all(up_stream_socket, request_buffer, sizeof(request_buffer) - 1);
+            write_all(up_stream_socket, request_buffer, bytes_received);
         if (result < 0) {
             perror("write failed");
             goto client_cleanup;
@@ -116,15 +117,14 @@ int main(int argc, char* argv[]) {
         forward_all(up_stream_socket, client_fd);
 
     client_cleanup:
-        if (up_stream_socket >= 0)
-            close(up_stream_socket);
-        if (client_fd >= 0)
-            close(client_fd);
-        if (req.host)
-            free(req.host);
+        if (up_stream_socket >= 0) { close(up_stream_socket); }
+        if (client_fd >= 0) {
+            close(client_fd); 
+            printf("Connection reseted by peer...\n");
+        }
+        if (req.host) { free(req.host); }
     }
 
-    if (g_server_socket >= 0)
-        close(g_server_socket);
+    if (g_server_socket >= 0) { close(g_server_socket); }
     return 0;
 };
