@@ -1,3 +1,6 @@
+#ifndef HTTP_HANDLER_H
+#define HTTP_HANDLER_H
+
 typedef enum {
     HTTP_MAX_URL_LENGTH = 256,
     HTTP_MAX_METHOD_LENGTH = 16,
@@ -20,3 +23,9 @@ typedef struct {
 int parse_http_request(const char *request, HttpRequest *req);
 
 int resolve_host(const char *host, char *ip_str, size_t ip_len);
+
+int read_http_request(int client_fd, char* buffer, size_t buffer_size);
+
+ssize_t forward_all(int from_fd, int to_fd);
+
+#endif /* HTTP_HANDLER_H */

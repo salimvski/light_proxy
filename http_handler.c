@@ -58,3 +58,15 @@ int resolve_host(const char *host, char *ip_str, size_t ip_len) {
     return 0;
 }
 
+
+int read_http_request(int client_fd, char* buffer, size_t buffer_size) {
+    int bytes = recv(client_fd, buffer, buffer_size - 1, 0);
+    if (bytes == 0) return 0;          // Client closed
+    if (bytes < 0) {
+        perror("recv failed client");
+        return -1;
+    }
+    buffer[bytes] = '\0';
+    return bytes;
+}
+
