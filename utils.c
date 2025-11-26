@@ -80,6 +80,7 @@ ssize_t forward_all(int from_fd, int to_fd) {
             perror("write failed");
             return -1;
         }
+        total += sent;
 
     }
 

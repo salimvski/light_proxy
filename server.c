@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
 #include "http_handler.h"
 #include "network.h"
 #include "utils.h"
@@ -73,8 +74,8 @@ int main(int argc, char* argv[]) {
 
         char request_buffer[NET_BUFFER_SIZE] = {0};
         size_t max_recv = sizeof(request_buffer) - 1;
-        int bytes_received = read_http_request(client_fd,
-                                               request_buffer, max_recv);
+        ssize_t bytes_received = read_http_request(client_fd,
+                                                   request_buffer, max_recv);
 
         if (bytes_received == 0) {
             printf("Client closed connection\n");
@@ -107,24 +108,52 @@ int main(int argc, char* argv[]) {
             goto client_cleanup;
         }
 
-        ssize_t result =
-            write_all(up_stream_socket, request_buffer, bytes_received);
-        if (result < 0) {
-            perror("write failed");
+        int injection_status = inject_connection_close(request_buffer, &bytes_received);
+
+        if (injection_status == 0) {
+            ssize_t result =
+                write_all(up_stream_socket, request_buffer, bytes_received);
+            if (result < 0) {
+                perror("write failed");
+                goto client_cleanup;
+            }
+        } else {
+            const char* err_400_response = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+            write(client_fd, err_400_response, strlen(err_400_response));
             goto client_cleanup;
         }
 
-        forward_all(up_stream_socket, client_fd);
+        ssize_t total_response_size = forward_all(up_stream_socket, client_fd);
+
+        if (total_response_size >= 0) {
+            printf("Successfully forwarded %zd bytes of response.\n",
+                   total_response_size);
+            goto client_cleanup;
+        } else {
+            fprintf(stderr,
+                    "Fatal error during response streaming (Code: %zd).\n", total_response_size);
+
+            const char* err_500 = "HTTP/1.1 500 Internal Proxy Error\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+            write(client_fd, err_500, strlen(err_500));
+
+            goto client_cleanup;
+        }
 
     client_cleanup:
-        if (up_stream_socket >= 0) { close(up_stream_socket); }
+        if (up_stream_socket >= 0) {
+            close(up_stream_socket);
+        }
         if (client_fd >= 0) {
-            close(client_fd); 
+            close(client_fd);
             printf("Connection reseted by peer...\n");
         }
-        if (req.host) { free(req.host); }
+        if (req.host) {
+            free(req.host);
+        }
     }
 
-    if (g_server_socket >= 0) { close(g_server_socket); }
+    if (g_server_socket >= 0) {
+        close(g_server_socket);
+    }
     return 0;
 };
